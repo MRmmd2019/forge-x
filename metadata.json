@@ -1,0 +1,8 @@
+{
+  "name": "AutoForge",
+  "description": "Deterministic build engine and developer workbench converting web projects into single standalone worker.js for Cloudflare Workers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
