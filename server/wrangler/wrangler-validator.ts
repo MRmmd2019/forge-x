@@ -20,8 +20,13 @@ export class WranglerValidator {
 
     const compatibilityDate = '2024-09-01';
 
-    // 1. Check syntax & export validation first
-    if (!workerCode.includes('export default')) {
+    // 1. Check syntax & export validation first (matches both 'export default' and esbuild minified 'export { ... as default }')
+    const hasDefaultExport =
+      workerCode.includes('export default') ||
+      /export\s*\{[^}]*\bas\s+default\b/i.test(workerCode) ||
+      /export\s*\{\s*default\s*\}/i.test(workerCode);
+
+    if (!hasDefaultExport) {
       diagnostics.push({
         stage: 'wrangler',
         code: 'MISSING_DEFAULT_EXPORT',

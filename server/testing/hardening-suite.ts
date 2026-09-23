@@ -17,27 +17,8 @@ import { BundleInspector } from '@/server/inspector/bundle-inspector';
 import { WranglerValidator } from '@/server/wrangler/wrangler-validator';
 import { RuntimeSmokeTester } from '@/server/smoke/runtime-smoke-tester';
 import { BuildPipeline } from '@/server/pipeline';
-import { BuildPlan, ProjectWorkspace } from '@/types/bundler';
-
-export interface TestCaseResult {
-  id: number;
-  name: string;
-  category: 'functional' | 'security' | 'resource_limit' | 'runtime_verification';
-  passed: boolean;
-  expectedOutcome: string;
-  actualOutcome: string;
-  durationMs: number;
-  error?: string;
-}
-
-export interface HardeningSuiteReport {
-  timestamp: number;
-  totalTests: number;
-  passedCount: number;
-  failedCount: number;
-  durationMs: number;
-  results: TestCaseResult[];
-}
+import { BuildPlan, ProjectWorkspace, TestCaseResult, HardeningSuiteReport } from '@/types/bundler';
+export type { TestCaseResult, HardeningSuiteReport };
 
 export class HardeningTestSuite {
   static async runAll(): Promise<HardeningSuiteReport> {

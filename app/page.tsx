@@ -37,7 +37,7 @@ import {
   PipelineProgressEvent,
   SampleProject,
 } from '@/types/bundler';
-import { SAMPLE_PROJECTS } from '@/server/samples/sample-projects';
+import { SAMPLE_PROJECTS } from '@/lib/sample-projects';
 
 export default function Page() {
   const [options, setOptions] = useState<BuildOptions>({

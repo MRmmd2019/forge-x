@@ -14,7 +14,7 @@ import {
   Server,
   Zap,
 } from 'lucide-react';
-import { HardeningSuiteReport, TestCaseResult } from '@/server/testing/hardening-suite';
+import type { HardeningSuiteReport, TestCaseResult } from '@/types/bundler';
 
 interface HardeningSuiteModalProps {
   isOpen: boolean;

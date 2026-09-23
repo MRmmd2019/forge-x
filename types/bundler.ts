@@ -370,3 +370,23 @@ export interface SampleProject {
   files: { path: string; content: string }[];
 }
 
+export interface TestCaseResult {
+  id: number;
+  name: string;
+  category: 'functional' | 'security' | 'resource_limit' | 'runtime_verification';
+  passed: boolean;
+  expectedOutcome: string;
+  actualOutcome: string;
+  durationMs: number;
+  error?: string;
+}
+
+export interface HardeningSuiteReport {
+  timestamp: number;
+  totalTests: number;
+  passedCount: number;
+  failedCount: number;
+  durationMs: number;
+  results: TestCaseResult[];
+}
+
