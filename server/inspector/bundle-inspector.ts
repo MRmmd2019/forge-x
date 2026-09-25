@@ -1,5 +1,5 @@
 import { AssetRecord, BundleInspectorReport } from '@/types/bundler';
-import { formatBytes } from '@/server/scanner/scanner';
+import { formatBytes } from '@/lib/utils';
 
 const LIMIT_SAFE = 50 * 1024 * 1024;
 const LIMIT_WARNING = 56 * 1024 * 1024;

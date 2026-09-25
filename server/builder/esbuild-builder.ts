@@ -127,13 +127,18 @@ export class EsbuildBuilder {
         } catch {}
       }
 
-      // Check wrangler.toml for [vars]
+      // Check wrangler.toml, wrangler.json, or wrangler.jsonc for [vars]
       const wranglerTomlPath = path.join(workspace.dirPath, 'wrangler.toml');
+      const wranglerJsonPath = path.join(workspace.dirPath, 'wrangler.json');
+      const wranglerJsoncPath = path.join(workspace.dirPath, 'wrangler.jsonc');
       const wranglerVars: Record<string, string> = {};
+
       if (fs.existsSync(wranglerTomlPath)) {
         try {
           const tomlContent = fs.readFileSync(wranglerTomlPath, 'utf8');
-          const varsMatch = tomlContent.match(/\[vars\]([\s\S]*?)(?:\[|$)/);
+          // Strip comments before parsing vars
+          const stripped = tomlContent.replace(/#[^\n\r]*/g, '');
+          const varsMatch = stripped.match(/\[vars\]([\s\S]*?)(?:\[|$)/);
           if (varsMatch) {
             const lines = varsMatch[1].split('\n');
             for (const line of lines) {
@@ -146,6 +151,18 @@ export class EsbuildBuilder {
                 }
                 wranglerVars[key] = JSON.stringify(val);
               }
+            }
+          }
+        } catch {}
+      } else if (fs.existsSync(wranglerJsonPath) || fs.existsSync(wranglerJsoncPath)) {
+        const jPath = fs.existsSync(wranglerJsonPath) ? wranglerJsonPath : wranglerJsoncPath;
+        try {
+          const jsonRaw = fs.readFileSync(jPath, 'utf8');
+          const cleanJson = jsonRaw.replace(/\/\/[^\n\r]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+          const parsed = JSON.parse(cleanJson);
+          if (parsed.vars && typeof parsed.vars === 'object') {
+            for (const [k, v] of Object.entries(parsed.vars)) {
+              wranglerVars[k] = JSON.stringify(v);
             }
           }
         } catch {}
@@ -166,41 +183,9 @@ export class EsbuildBuilder {
         buildDefines['process.env.VERSION'] = buildDefines['VERSION'];
       }
 
-      // If EMBEDED_SETTINGS is referenced in code (e.g. BPB Worker Panel), inject fallback structure
-      const hasEmbededSettings = workspace.files.some(f => f.content && f.content.includes('EMBEDED_SETTINGS'));
-      if (hasEmbededSettings && !buildDefines['EMBEDED_SETTINGS']) {
-        buildDefines['EMBEDED_SETTINGS'] = JSON.stringify({
-          accID: 'default',
-          accEmail: 'admin@example.com',
-          apiToken: '',
-          vlUUID: '00000000-0000-0000-0000-000000000000',
-          trPass: 'password',
-          securePath: 'panel',
-          proxyIpMode: 'auto',
-          proxyIPs: [],
-          prefixes: [],
-          mainDomain: 'localhost',
-          fallback: 'localhost',
-          dohUrl: 'https://cloudflare-dns.com/dns-query',
-        });
-      }
-
-      // Check for ERROR_HTML_CONTENT or __ICON__
-      const hasErrorHtml = workspace.files.some(f => f.content && f.content.includes('ERROR_HTML_CONTENT'));
-      if (hasErrorHtml && !buildDefines['ERROR_HTML_CONTENT']) {
-        buildDefines['ERROR_HTML_CONTENT'] = JSON.stringify('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Error</title></head><body><h1>Service Error</h1></body></html>');
-      }
-
-      const hasIconToken = workspace.files.some(f => f.content && f.content.includes('__ICON__'));
-      if (hasIconToken && !buildDefines['__ICON__']) {
-        buildDefines['__ICON__'] = JSON.stringify('AAABAAEAAQEAAAEAIAAwAAAAFgAAACgAAAABAAAAAgAAAAEAIAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAP//AAAAAA==');
-      }
-
       const bannerDefinitions = [
         `if (typeof globalThis.VERSION === 'undefined') { globalThis.VERSION = ${buildDefines['VERSION']}; }`,
         `var VERSION = globalThis.VERSION;`,
-        buildDefines['ERROR_HTML_CONTENT'] ? `if (typeof globalThis.ERROR_HTML_CONTENT === 'undefined') { globalThis.ERROR_HTML_CONTENT = ${buildDefines['ERROR_HTML_CONTENT']}; }\nvar ERROR_HTML_CONTENT = globalThis.ERROR_HTML_CONTENT;` : '',
-        buildDefines['EMBEDED_SETTINGS'] ? `if (typeof globalThis.EMBEDED_SETTINGS === 'undefined') { globalThis.EMBEDED_SETTINGS = ${buildDefines['EMBEDED_SETTINGS']}; }\nvar EMBEDED_SETTINGS = globalThis.EMBEDED_SETTINGS;` : '',
       ].filter(Boolean).join('\n');
 
       const nodeRequireBanner = [
@@ -240,20 +225,36 @@ export class EsbuildBuilder {
         ],
         loader: {
           '.ts': 'ts',
+          '.tsx': 'tsx',
           '.mts': 'ts',
           '.cts': 'ts',
           '.js': 'js',
+          '.jsx': 'jsx',
           '.mjs': 'js',
           '.cjs': 'js',
           '.css': 'css',
           '.json': 'json',
+          // Vector & Text
+          '.svg': 'text',
+          '.html': 'text',
           '.txt': 'text',
           '.csv': 'text',
-          '.html': 'text',
+          // Images -> dataurl
           '.png': 'dataurl',
           '.jpg': 'dataurl',
           '.jpeg': 'dataurl',
-          '.svg': 'text',
+          '.webp': 'dataurl',
+          '.gif': 'dataurl',
+          '.ico': 'dataurl',
+          '.avif': 'dataurl',
+          // Fonts -> binary
+          '.woff': 'binary',
+          '.woff2': 'binary',
+          '.ttf': 'binary',
+          '.otf': 'binary',
+          '.eot': 'binary',
+          // WebAssembly -> binary
+          '.wasm': 'binary',
         },
         plugins: [createCloudflareWorkersPlugin(plan.externalDependencies || [])],
         external: Array.from(externalSet),

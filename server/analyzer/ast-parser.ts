@@ -38,10 +38,11 @@ export class AstParser {
    * Parses JavaScript or TypeScript source code using TypeScript compiler AST.
    */
   static parseModule(filePath: string, sourceCode: string): AstModuleInfo {
-    const isTs = filePath.endsWith('.ts') || filePath.endsWith('.mts') || filePath.endsWith('.cts');
-    const scriptKind = filePath.endsWith('.tsx')
+    const lowerPath = filePath.toLowerCase();
+    const isTs = lowerPath.endsWith('.ts') || lowerPath.endsWith('.mts') || lowerPath.endsWith('.cts');
+    const scriptKind = lowerPath.endsWith('.tsx')
       ? ts.ScriptKind.TSX
-      : filePath.endsWith('.jsx')
+      : lowerPath.endsWith('.jsx')
       ? ts.ScriptKind.JSX
       : isTs
       ? ts.ScriptKind.TS
@@ -61,12 +62,27 @@ export class AstParser {
     let isCommonJs = false;
     let hasAsyncHandler = false;
     const nodeBuiltinsUsed = new Set<string>();
+    const topLevelDeclarations = new Map<string, ts.Node>();
 
     function checkNodeBuiltin(moduleSpecifier: string) {
       const clean = moduleSpecifier.replace(/^node:/, '');
       if (NODE_BUILTINS.has(clean) || NODE_BUILTINS.has(moduleSpecifier)) {
         nodeBuiltinsUsed.add(clean);
       }
+    }
+
+    function checkClassHasFetch(classNode: ts.ClassDeclaration | ts.ClassExpression): boolean {
+      for (const member of classNode.members) {
+        if (ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
+          if (member.name.text === 'fetch') {
+            if (member.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+              hasAsyncHandler = true;
+            }
+            return true;
+          }
+        }
+      }
+      return false;
     }
 
     function checkFetchMethodInObject(objLiteral: ts.ObjectLiteralExpression) {
@@ -91,6 +107,52 @@ export class AstParser {
             }
           }
         }
+      }
+    }
+
+    function inspectTargetForWorkerHandler(targetNode: ts.Node) {
+      if (ts.isObjectLiteralExpression(targetNode)) {
+        checkFetchMethodInObject(targetNode);
+      } else if (ts.isFunctionExpression(targetNode) || ts.isArrowFunction(targetNode)) {
+        hasWorkerFetchHandler = true;
+        if (targetNode.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+          hasAsyncHandler = true;
+        }
+      } else if (ts.isClassDeclaration(targetNode) || ts.isClassExpression(targetNode)) {
+        if (checkClassHasFetch(targetNode)) {
+          hasWorkerFetchHandler = true;
+        }
+      } else if (ts.isNewExpression(targetNode)) {
+        // e.g. const app = new Hono(); export default app;
+        const exprName = targetNode.expression && ts.isIdentifier(targetNode.expression)
+          ? targetNode.expression.text.toLowerCase()
+          : '';
+        if (exprName.includes('hono') || exprName.includes('router') || exprName.includes('app') || exprName.includes('itty')) {
+          hasWorkerFetchHandler = true;
+        } else {
+          // General instantiated class export
+          hasWorkerFetchHandler = true;
+        }
+      } else if (ts.isIdentifier(targetNode)) {
+        const resolved = topLevelDeclarations.get(targetNode.text);
+        if (resolved) {
+          inspectTargetForWorkerHandler(resolved);
+        }
+      }
+    }
+
+    // First pass: collect top-level declarations
+    for (const statement of sourceFile.statements) {
+      if (ts.isVariableStatement(statement)) {
+        for (const decl of statement.declarationList.declarations) {
+          if (ts.isIdentifier(decl.name) && decl.initializer) {
+            topLevelDeclarations.set(decl.name.text, decl.initializer);
+          }
+        }
+      } else if (ts.isClassDeclaration(statement) && statement.name) {
+        topLevelDeclarations.set(statement.name.text, statement);
+      } else if (ts.isFunctionDeclaration(statement) && statement.name) {
+        topLevelDeclarations.set(statement.name.text, statement);
       }
     }
 
@@ -180,7 +242,7 @@ export class AstParser {
         }
       }
 
-      // 3. Export Declarations (export { a, b } from '...')
+      // 3. Export Declarations (export { a, b } from '...' or export { app as default })
       if (ts.isExportDeclaration(node)) {
         const isTypeOnly = node.isTypeOnly;
         let reExportSource: string | undefined;
@@ -197,34 +259,33 @@ export class AstParser {
 
         if (node.exportClause && ts.isNamedExports(node.exportClause)) {
           for (const el of node.exportClause.elements) {
+            const isDefault = el.name.text === 'default';
             exports.push({
               name: el.name.text,
-              isDefault: el.name.text === 'default',
+              isDefault,
               isTypeOnly: isTypeOnly || el.isTypeOnly,
               reExportSource,
             });
+
+            if (isDefault) {
+              const localIdentifier = el.propertyName ? el.propertyName.text : el.name.text;
+              const targetNode = topLevelDeclarations.get(localIdentifier);
+              if (targetNode) {
+                inspectTargetForWorkerHandler(targetNode);
+              }
+            }
           }
         }
       }
 
-      // 4. Export Default Assignment (export default { ... })
+      // 4. Export Default Assignment (export default { ... } or export default app;)
       if (ts.isExportAssignment(node)) {
         exports.push({
           name: 'default',
           isDefault: true,
         });
 
-        if (ts.isObjectLiteralExpression(node.expression)) {
-          checkFetchMethodInObject(node.expression);
-        } else if (
-          ts.isFunctionExpression(node.expression) ||
-          ts.isArrowFunction(node.expression)
-        ) {
-          hasWorkerFetchHandler = true;
-          if (node.expression.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword)) {
-            hasAsyncHandler = true;
-          }
-        }
+        inspectTargetForWorkerHandler(node.expression);
       }
 
       // 5. Export Function or Class or Variable
@@ -247,18 +308,19 @@ export class AstParser {
           const name = node.name ? node.name.text : isDefault ? 'default' : '';
           if (name) {
             exports.push({ name, isDefault });
-            for (const member of node.members) {
-              if (ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
-                if (member.name.text === 'fetch') {
-                  hasWorkerFetchHandler = true;
-                }
-              }
+            if (checkClassHasFetch(node)) {
+              hasWorkerFetchHandler = true;
             }
           }
         } else if (ts.isVariableStatement(node)) {
           for (const decl of node.declarationList.declarations) {
             if (ts.isIdentifier(decl.name)) {
               exports.push({ name: decl.name.text, isDefault: false });
+              if (decl.name.text === 'fetch' || decl.name.text === 'handler') {
+                if (decl.initializer) {
+                  inspectTargetForWorkerHandler(decl.initializer);
+                }
+              }
             }
           }
         }
@@ -272,12 +334,13 @@ export class AstParser {
           if (ts.isIdentifier(expr) && expr.text === 'module' && propName === 'exports') {
             isCommonJs = true;
             exports.push({ name: 'default', isDefault: true });
-            if (ts.isObjectLiteralExpression(node.right)) {
-              checkFetchMethodInObject(node.right);
-            }
+            inspectTargetForWorkerHandler(node.right);
           } else if (ts.isIdentifier(expr) && expr.text === 'exports') {
             isCommonJs = true;
             exports.push({ name: propName, isDefault: propName === 'default' });
+            if (propName === 'default' || propName === 'fetch') {
+              inspectTargetForWorkerHandler(node.right);
+            }
           }
         }
       }

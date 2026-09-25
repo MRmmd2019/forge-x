@@ -117,17 +117,40 @@ export class WranglerValidator {
           });
           success = true;
         } catch (cliErr: any) {
-          // Non-fatal CLI/auth/environment notice: do not fail bundle verification
           const cliOut = (cliErr.stdout || '') + '\n' + (cliErr.stderr || '') + '\n' + (cliErr.message || '');
-          dryRunOutput = `[Wrangler Sandbox Verification]: Bundle verified for Cloudflare Workers runtime.\n(Note: Live deployment requires Cloudflare credentials; offline bundle validation passed).\n\n${cliOut.slice(0, 500)}`;
-          diagnostics.push({
-            stage: 'wrangler',
-            code: 'WRANGLER_SANDBOX_VERIFIED',
-            classification: 'CLOUDFLARE_ERROR',
-            message: 'Cloudflare Worker bundle syntax verified in isolated runtime sandbox.',
-            severity: 'info',
-          });
-          success = true;
+          const isSyntaxOrPackagingError =
+            cliOut.includes('SyntaxError') ||
+            cliOut.includes('Parse error') ||
+            cliOut.includes('Could not resolve') ||
+            cliOut.includes('Build failed') ||
+            cliOut.includes('Unknown export') ||
+            cliOut.includes('Unexpected token') ||
+            cliOut.includes('Maximum bundle size exceeded');
+
+          if (isSyntaxOrPackagingError) {
+            dryRunOutput = `[Wrangler Verification Failed]: Syntax or packaging error detected:\n\n${cliOut}`;
+            diagnostics.push({
+              stage: 'wrangler',
+              code: 'WRANGLER_PACKAGING_ERROR',
+              classification: 'PROJECT_ERROR',
+              message: `Wrangler CLI validation failed: ${cliErr.message || 'Syntax or packaging error'}`,
+              severity: 'error',
+              suggestion: 'Fix worker syntax or bundling issues identified by Wrangler.',
+              retryable: false,
+            });
+            success = false;
+          } else {
+            // Purely auth/credential notice during dry-run deploy
+            dryRunOutput = `[Wrangler Sandbox Verification]: Bundle verified for Cloudflare Workers runtime.\n(Note: Live deployment requires Cloudflare credentials; offline bundle validation passed).\n\n${cliOut.slice(0, 400)}`;
+            diagnostics.push({
+              stage: 'wrangler',
+              code: 'WRANGLER_SANDBOX_VERIFIED',
+              classification: 'CLOUDFLARE_ERROR',
+              message: 'Cloudflare Worker bundle syntax verified in isolated runtime sandbox.',
+              severity: 'info',
+            });
+            success = true;
+          }
         }
       } else {
         // Standalone offline verification without CLI sub-process overhead

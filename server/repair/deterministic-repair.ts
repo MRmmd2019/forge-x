@@ -225,23 +225,6 @@ export class DeterministicRepairEngine {
           repairedPlan.defines['process.env.VERSION'] = JSON.stringify('5.0.0');
           repairActions.push(`Injected global define for missing compile-time constant "${missingId}"`);
           canRetry = true;
-        } else if (missingId === 'EMBEDED_SETTINGS') {
-          repairedPlan.defines['EMBEDED_SETTINGS'] = JSON.stringify({
-            accID: 'default',
-            accEmail: 'admin@example.com',
-            apiToken: '',
-            vlUUID: '00000000-0000-0000-0000-000000000000',
-            trPass: 'password',
-            securePath: 'panel',
-            proxyIpMode: 'auto',
-            proxyIPs: [],
-            prefixes: [],
-            mainDomain: 'localhost',
-            fallback: 'localhost',
-            dohUrl: 'https://cloudflare-dns.com/dns-query',
-          });
-          repairActions.push(`Injected global define for "${missingId}"`);
-          canRetry = true;
         } else {
           repairedPlan.defines[missingId] = `globalThis.${missingId}`;
           repairActions.push(`Injected fallback define for "${missingId}"`);

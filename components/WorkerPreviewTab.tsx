@@ -317,7 +317,7 @@ export function WorkerPreviewTab({ workerCode, routes }: WorkerPreviewTabProps) 
               title="Cloudflare Worker Live Simulator"
               srcDoc={responseHtml || '<div style="font-family:sans-serif;padding:2rem;">No response body</div>'}
               className="w-full h-full border-0 bg-white text-black"
-              sandbox="allow-scripts allow-same-origin allow-forms"
+              sandbox="allow-scripts allow-forms"
             />
           </div>
         )}

@@ -18,18 +18,35 @@ function transformWorkerCodeForHybrid(code: string): string {
     handled = true;
   }
 
-  // 2. export default function name(...) or export default function(...)
+  // 2. export default function name(...) or export default async function(...)
   if (!handled) {
-    const defaultFnRegex = /export\s+default\s+function(?:\s+([a-zA-Z0-9_$]+))?\s*\(/g;
+    const defaultFnRegex = /export\s+default\s+(?:async\s+)?function(?:\s+([a-zA-Z0-9_$]+))?\s*\(/g;
     if (defaultFnRegex.test(transformed)) {
-      transformed = transformed.replace(defaultFnRegex, (_match, fnName) => {
-        return fnName ? `function ${fnName}(` : 'const __userWorkerHandler__ = function(';
+      transformed = transformed.replace(defaultFnRegex, (match, fnName) => {
+        const isAsync = match.includes('async');
+        const prefix = isAsync ? 'async function' : 'function';
+        return fnName ? `${prefix} ${fnName}(` : `const __userWorkerHandler__ = ${prefix}(`;
       });
       handled = true;
     }
   }
 
-  // 3. export default identifier;
+  // 3. export default class
+  if (!handled) {
+    const defaultClassRegex = /export\s+default\s+class(?:\s+([a-zA-Z0-9_$]+))?\s*(?:extends\s+([a-zA-Z0-9_$.]+))?\s*\{/g;
+    if (defaultClassRegex.test(transformed)) {
+      let declaredName = '__UserWorkerClass__';
+      transformed = transformed.replace(defaultClassRegex, (_match, className, superName) => {
+        declaredName = className || '__UserWorkerClass__';
+        const extendsClause = superName ? `extends ${superName} ` : '';
+        return `class ${declaredName} ${extendsClause}{\n`;
+      });
+      transformed += `\nconst __userWorkerHandler__ = ${declaredName};\n`;
+      handled = true;
+    }
+  }
+
+  // 4. export default identifier;
   if (!handled) {
     const defaultIdRegex = /export\s+default\s+([a-zA-Z0-9_$]+)\s*;/g;
     if (defaultIdRegex.test(transformed)) {
@@ -38,7 +55,7 @@ function transformWorkerCodeForHybrid(code: string): string {
     }
   }
 
-  // 4. export default { ... }
+  // 5. export default { ... }
   if (!handled) {
     transformed = transformed.replace(/export\s+default\s+/, 'const __userWorkerHandler__ = ');
   }
@@ -61,12 +78,12 @@ export class WorkerGenerator {
       analysis.hasWorkerFetchHandler ||
       /export\s+default\s*\{[\s\S]*?\bfetch\b/i.test(compiledJsCode) ||
       /export\s*\{\s*[^}]*\bas\s+default\b/i.test(compiledJsCode) ||
-      /export\s+default\s+function/i.test(compiledJsCode) ||
+      /export\s+default\s+(?:async\s+)?function/i.test(compiledJsCode) ||
+      /export\s+default\s+class/i.test(compiledJsCode) ||
       plan.workerMode === 'native_worker';
 
-    // Build the serialized asset map
-    // We add the compiled JS bundle as a served asset under its entry path & common script aliases!
-    const serializedAssets: Record<
+    // Deduplicated asset storage: data is stored ONCE by hash, routes map to hashes
+    const assetDataMap: Record<
       string,
       {
         type: string;
@@ -76,9 +93,10 @@ export class WorkerGenerator {
         size: number;
       }
     > = {};
+    const routeMap: Record<string, string> = {};
 
     for (const asset of assets) {
-      serializedAssets[asset.route] = {
+      assetDataMap[asset.hash] = {
         type: asset.mimeType,
         encoding: asset.encoding,
         data: asset.data,
@@ -86,18 +104,18 @@ export class WorkerGenerator {
         size: asset.size,
       };
 
-      // Also without leading slash for flexible lookups
+      routeMap[asset.route] = asset.hash;
       const noSlash = asset.route.replace(/^\/+/, '');
-      if (noSlash && !serializedAssets[noSlash]) {
-        serializedAssets[noSlash] = serializedAssets[asset.route];
+      if (noSlash && !routeMap[noSlash]) {
+        routeMap[noSlash] = asset.hash;
       }
     }
 
     // Register compiled bundle as asset if this is a web application
+    // Guarantee that compiledJsCode is stored EXACTLY ONCE in assetDataMap
     if (compiledJsCode && (!hasWorkerExport || plan.workerMode !== 'native_worker')) {
       const bundleHash = 'b' + Math.abs(hashCode(compiledJsCode)).toString(16);
-      const cleanEntry = plan.entry.replace(/^\/+/, '');
-      const jsAssetObj = {
+      assetDataMap[bundleHash] = {
         type: 'application/javascript; charset=utf-8',
         encoding: 'utf8' as const,
         data: compiledJsCode,
@@ -105,43 +123,48 @@ export class WorkerGenerator {
         size: Buffer.byteLength(compiledJsCode, 'utf8'),
       };
 
-      serializedAssets[`/${cleanEntry}`] = jsAssetObj;
-      serializedAssets[cleanEntry] = jsAssetObj;
+      const cleanEntry = plan.entry.replace(/^\/+/, '');
+      routeMap[`/${cleanEntry}`] = bundleHash;
+      routeMap[cleanEntry] = bundleHash;
 
       // Also register JS extension if entry was .ts
       if (cleanEntry.endsWith('.ts')) {
         const jsVersion = cleanEntry.replace(/\.ts$/, '.js');
-        serializedAssets[`/${jsVersion}`] = jsAssetObj;
-        serializedAssets[jsVersion] = jsAssetObj;
+        routeMap[`/${jsVersion}`] = bundleHash;
+        routeMap[jsVersion] = bundleHash;
       }
       if (cleanEntry.includes('/')) {
         const basename = cleanEntry.split('/').pop()!;
-        serializedAssets[`/${basename}`] = jsAssetObj;
-        serializedAssets[basename] = jsAssetObj;
+        routeMap[`/${basename}`] = bundleHash;
+        routeMap[basename] = bundleHash;
         if (basename.endsWith('.ts')) {
           const jsBase = basename.replace(/\.ts$/, '.js');
-          serializedAssets[`/${jsBase}`] = jsAssetObj;
-          serializedAssets[jsBase] = jsAssetObj;
+          routeMap[`/${jsBase}`] = bundleHash;
+          routeMap[jsBase] = bundleHash;
         }
       }
     }
 
-    // Register compiled CSS if separate
+    // Register compiled CSS if separate - stored ONCE in assetDataMap
     if (compiledCss) {
       const cssHash = 'c' + Math.abs(hashCode(compiledCss)).toString(16);
-      const cssAssetObj = {
+      assetDataMap[cssHash] = {
         type: 'text/css; charset=utf-8',
         encoding: 'utf8' as const,
         data: compiledCss,
         hash: cssHash,
         size: Buffer.byteLength(compiledCss, 'utf8'),
       };
-      serializedAssets['/bundle.css'] = cssAssetObj;
-      serializedAssets['/styles.css'] = cssAssetObj;
-      serializedAssets['/style.css'] = cssAssetObj;
+      routeMap['/bundle.css'] = cssHash;
+      routeMap['bundle.css'] = cssHash;
+      routeMap['/styles.css'] = cssHash;
+      routeMap['styles.css'] = cssHash;
+      routeMap['/style.css'] = cssHash;
+      routeMap['style.css'] = cssHash;
     }
 
-    const jsonAssets = JSON.stringify(serializedAssets);
+    const jsonAssetData = JSON.stringify(assetDataMap);
+    const jsonRoutes = JSON.stringify(routeMap);
 
     // If native worker with NO assets
     if (hasWorkerExport && plan.workerMode === 'native_worker' && assets.length === 0) {
@@ -157,15 +180,15 @@ ${compiledJsCode}
 
     // If native worker or hybrid worker with assets
     if (hasWorkerExport) {
-      // Wrap user code in a scoped module or delegate
       return `/**
  * Standalone Cloudflare Worker
  * Generated by Auto Bundler
  * Mode: Hybrid API + Embedded Static Assets
  */
 
-// Embedded Static Assets
-const __ASSETS__ = ${jsonAssets};
+// Embedded Static Assets (Deduplicated)
+const __ASSET_DATA__ = ${jsonAssetData};
+const __ROUTES__ = ${jsonRoutes};
 
 // Binary Base64 Decoder
 function __b64ToUint8(b64) {
@@ -196,21 +219,21 @@ function __lookupAsset(rawPathname) {
     pathname = pathname.slice(0, -1);
   }
 
-  // Prototype-pollution safe lookup
-  if (Object.prototype.hasOwnProperty.call(__ASSETS__, pathname)) {
-    return __ASSETS__[pathname];
+  let hash = null;
+  if (Object.prototype.hasOwnProperty.call(__ROUTES__, pathname)) {
+    hash = __ROUTES__[pathname];
+  } else if (pathname === '/' && Object.prototype.hasOwnProperty.call(__ROUTES__, '/index.html')) {
+    hash = __ROUTES__['/index.html'];
+  } else if (pathname === '/' && Object.prototype.hasOwnProperty.call(__ROUTES__, 'index.html')) {
+    hash = __ROUTES__['index.html'];
+  } else if (Object.prototype.hasOwnProperty.call(__ROUTES__, pathname + '/index.html')) {
+    hash = __ROUTES__[pathname + '/index.html'];
+  } else if (pathname.startsWith('/') && Object.prototype.hasOwnProperty.call(__ROUTES__, pathname.slice(1))) {
+    hash = __ROUTES__[pathname.slice(1)];
   }
-  if (pathname === '/' && Object.prototype.hasOwnProperty.call(__ASSETS__, '/index.html')) {
-    return __ASSETS__['/index.html'];
-  }
-  if (pathname === '/' && Object.prototype.hasOwnProperty.call(__ASSETS__, 'index.html')) {
-    return __ASSETS__['index.html'];
-  }
-  if (Object.prototype.hasOwnProperty.call(__ASSETS__, pathname + '/index.html')) {
-    return __ASSETS__[pathname + '/index.html'];
-  }
-  if (pathname.startsWith('/') && Object.prototype.hasOwnProperty.call(__ASSETS__, pathname.slice(1))) {
-    return __ASSETS__[pathname.slice(1)];
+
+  if (hash && Object.prototype.hasOwnProperty.call(__ASSET_DATA__, hash)) {
+    return __ASSET_DATA__[hash];
   }
   return null;
 }
@@ -249,10 +272,18 @@ export default {
     }
 
     // Delegate to user worker handler
-    if (typeof __userWorkerHandler__ !== 'undefined') {
+    if (typeof __userWorkerHandler__ !== 'undefined' && __userWorkerHandler__) {
       if (typeof __userWorkerHandler__.fetch === 'function') {
         return __userWorkerHandler__.fetch(request, env, ctx);
       } else if (typeof __userWorkerHandler__ === 'function') {
+        const isClass = /^class\\s/.test(Function.prototype.toString.call(__userWorkerHandler__)) ||
+                        Boolean(__userWorkerHandler__.prototype && typeof __userWorkerHandler__.prototype.fetch === 'function');
+        if (isClass) {
+          const instance = new __userWorkerHandler__(env, ctx);
+          if (typeof instance.fetch === 'function') {
+            return instance.fetch(request, env, ctx);
+          }
+        }
         return __userWorkerHandler__(request, env, ctx);
       }
     }
@@ -270,8 +301,9 @@ export default {
  * Mode: Single-File Vanilla Web Runtime
  */
 
-// Embedded Asset Store
-const __ASSETS__ = ${jsonAssets};
+// Embedded Asset Store & Route Mapping (Deduplicated)
+const __ASSET_DATA__ = ${jsonAssetData};
+const __ROUTES__ = ${jsonRoutes};
 
 // Binary Base64 Decoder
 function __b64ToUint8(b64) {
@@ -302,28 +334,28 @@ function __lookupAsset(rawPathname) {
     pathname = pathname.slice(0, -1);
   }
 
-  // Prototype-pollution safe lookup
-  if (Object.prototype.hasOwnProperty.call(__ASSETS__, pathname)) {
-    return __ASSETS__[pathname];
-  }
-  if (pathname === '/' && Object.prototype.hasOwnProperty.call(__ASSETS__, '/index.html')) {
-    return __ASSETS__['/index.html'];
-  }
-  if (pathname === '/' && Object.prototype.hasOwnProperty.call(__ASSETS__, 'index.html')) {
-    return __ASSETS__['index.html'];
-  }
-  if (Object.prototype.hasOwnProperty.call(__ASSETS__, pathname + '/index.html')) {
-    return __ASSETS__[pathname + '/index.html'];
-  }
-  if (pathname.startsWith('/') && Object.prototype.hasOwnProperty.call(__ASSETS__, pathname.slice(1))) {
-    return __ASSETS__[pathname.slice(1)];
+  let hash = null;
+  if (Object.prototype.hasOwnProperty.call(__ROUTES__, pathname)) {
+    hash = __ROUTES__[pathname];
+  } else if (pathname === '/' && Object.prototype.hasOwnProperty.call(__ROUTES__, '/index.html')) {
+    hash = __ROUTES__['/index.html'];
+  } else if (pathname === '/' && Object.prototype.hasOwnProperty.call(__ROUTES__, 'index.html')) {
+    hash = __ROUTES__['index.html'];
+  } else if (Object.prototype.hasOwnProperty.call(__ROUTES__, pathname + '/index.html')) {
+    hash = __ROUTES__[pathname + '/index.html'];
+  } else if (pathname.startsWith('/') && Object.prototype.hasOwnProperty.call(__ROUTES__, pathname.slice(1))) {
+    hash = __ROUTES__[pathname.slice(1)];
   }
 
   // SPA fallback to index.html for text/html requests
-  if (!pathname.includes('.')) {
-    if (Object.prototype.hasOwnProperty.call(__ASSETS__, '/index.html')) return __ASSETS__['/index.html'];
-    if (Object.prototype.hasOwnProperty.call(__ASSETS__, 'index.html')) return __ASSETS__['index.html'];
-    if (Object.prototype.hasOwnProperty.call(__ASSETS__, '/')) return __ASSETS__['/'];
+  if (!hash && !pathname.includes('.')) {
+    if (Object.prototype.hasOwnProperty.call(__ROUTES__, '/index.html')) hash = __ROUTES__['/index.html'];
+    else if (Object.prototype.hasOwnProperty.call(__ROUTES__, 'index.html')) hash = __ROUTES__['index.html'];
+    else if (Object.prototype.hasOwnProperty.call(__ROUTES__, '/')) hash = __ROUTES__['/'];
+  }
+
+  if (hash && Object.prototype.hasOwnProperty.call(__ASSET_DATA__, hash)) {
+    return __ASSET_DATA__[hash];
   }
 
   return null;

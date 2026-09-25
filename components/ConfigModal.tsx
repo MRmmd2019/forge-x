@@ -20,7 +20,7 @@ export function ConfigModal({ isOpen, onClose, options, onChange }: ConfigModalP
         <div className="flex items-center justify-between pb-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
             <Sliders className="h-5 w-5 text-orange-500" />
-            <h2 className="text-base font-semibold text-white">Bundler Engine Configuration</h2>
+            <h2 className="text-base font-semibold text-white">AutoForge Compiler Configuration</h2>
           </div>
           <button
             onClick={onClose}
@@ -62,10 +62,10 @@ export function ConfigModal({ isOpen, onClose, options, onChange }: ConfigModalP
           <div className="flex items-center justify-between">
             <div>
               <label className="text-slate-200 font-medium block flex items-center gap-1.5">
-                <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-                Gemini AI Planning & Auto-Repair
+                <RefreshCw className="h-3.5 w-3.5 text-orange-400" />
+                Deterministic Auto-Repair
               </label>
-              <span className="text-xs text-slate-400">Analyze architecture & generate repair plans on errors</span>
+              <span className="text-xs text-slate-400">Autonomous AST analysis & deterministic rule-based repair engine</span>
             </div>
             <input
               type="checkbox"
@@ -79,7 +79,7 @@ export function ConfigModal({ isOpen, onClose, options, onChange }: ConfigModalP
           <div className="flex items-center justify-between">
             <div>
               <label className="text-slate-200 font-medium block">Bypass Synthetic Smoke Probes</label>
-              <span className="text-xs text-slate-400">Skip HTTP runtime route probes for complex VPN/panel workers (Wrangler verification still runs)</span>
+              <span className="text-xs text-slate-400">Skip synthetic HTTP route probes (Wrangler pre-flight verification will still execute)</span>
             </div>
             <input
               type="checkbox"

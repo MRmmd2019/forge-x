@@ -80,11 +80,15 @@ export class EntryDetector {
       ) {
         let mainPath: string | undefined;
         if (lowerName.endsWith('.toml')) {
-          const match = /main\s*=\s*["']([^"']+)["']/i.exec(f.content);
+          // Strip comments before extracting main
+          const stripped = f.content.replace(/#[^\n\r]*/g, '');
+          const match = /main\s*=\s*["']([^"']+)["']/i.exec(stripped);
           if (match) mainPath = match[1];
         } else {
           try {
-            const parsed = JSON.parse(f.content);
+            // Strip JSON/JSONC comments
+            const cleanJson = f.content.replace(/\/\/[^\n\r]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+            const parsed = JSON.parse(cleanJson);
             if (parsed.main) mainPath = parsed.main;
           } catch {}
         }
@@ -120,11 +124,46 @@ export class EntryDetector {
       }
     }
 
-    // 3. Check package.json (module, main, exports)
+    // 3. Check package.json (exports, module, main)
     const pkgFile = workspace.files.find(f => f.path.toLowerCase() === 'package.json');
     if (pkgFile && pkgFile.content) {
       try {
         const parsed = JSON.parse(pkgFile.content);
+
+        // Parse modern package.json "exports" field
+        if (parsed.exports) {
+          const exportCandidates: string[] = [];
+          if (typeof parsed.exports === 'string') {
+            exportCandidates.push(parsed.exports);
+          } else if (typeof parsed.exports === 'object' && parsed.exports !== null) {
+            const extractExports = (obj: any) => {
+              for (const [key, val] of Object.entries(obj)) {
+                if (typeof val === 'string') {
+                  exportCandidates.push(val);
+                } else if (typeof val === 'object' && val !== null) {
+                  extractExports(val);
+                }
+              }
+            };
+            extractExports(parsed.exports);
+          }
+
+          for (const exp of exportCandidates) {
+            const clean = exp.replace(/^\.\//, '');
+            if (workspace.files.some(f => f.path === clean)) {
+              addScore(
+                clean,
+                'script_entry',
+                94,
+                'package_json_exports',
+                'HIGH',
+                'Specified in package.json "exports" field'
+              );
+              break;
+            }
+          }
+        }
+
         if (parsed.module) {
           const clean = parsed.module.replace(/^\.\//, '');
           if (workspace.files.some(f => f.path === clean)) {
@@ -158,7 +197,7 @@ export class EntryDetector {
     for (const ref of htmlScriptReferences) {
       const scriptClean = ref.scriptSrc.replace(/^\.\//, '').replace(/^\//, '');
       const foundFile = workspace.files.find(
-        f => f.path === scriptClean || f.path.endsWith(scriptClean)
+        f => f.path === scriptClean || f.path.endsWith('/' + scriptClean)
       );
       if (foundFile) {
         addScore(

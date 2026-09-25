@@ -8,13 +8,91 @@ import {
 
 export class DependencyGraphBuilder {
   /**
+   * Extracts compiler path aliases from tsconfig.json or jsconfig.json
+   */
+  static extractPathAliases(workspace: ProjectWorkspace): Record<string, string[]> {
+    const aliases: Record<string, string[]> = {};
+    const configFiles = ['tsconfig.json', 'jsconfig.json'];
+    for (const name of configFiles) {
+      const f = workspace.files.find(w => w.path.toLowerCase() === name);
+      if (f && f.content) {
+        try {
+          const cleanJson = f.content.replace(/\/\/[^\n\r]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+          const parsed = JSON.parse(cleanJson);
+          const paths = parsed.compilerOptions?.paths;
+          const baseUrl = (parsed.compilerOptions?.baseUrl || '.').replace(/^\.\/?/, '');
+          if (paths && typeof paths === 'object') {
+            for (const [key, targets] of Object.entries(paths)) {
+              if (Array.isArray(targets)) {
+                aliases[key] = (targets as string[]).map(t => {
+                  const cleanedTarget = t.replace(/^\.\/?/, '');
+                  return baseUrl ? path.join(baseUrl, cleanedTarget).replace(/\\/g, '/') : cleanedTarget;
+                });
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // Standard conventional fallbacks for modern bundlers (Vite/Next/Rollup)
+    const hasSrc = workspace.files.some(f => f.path.startsWith('src/'));
+    if (!Object.keys(aliases).some(k => k.startsWith('@/'))) {
+      aliases['@/*'] = [hasSrc ? 'src/*' : '*'];
+    }
+    if (!Object.keys(aliases).some(k => k.startsWith('~/'))) {
+      aliases['~/*'] = [hasSrc ? 'src/*' : '*'];
+    }
+
+    return aliases;
+  }
+
+  /**
    * Resolves an import source specifier to a physical file path in the workspace.
    */
   static resolveSpecifier(
     fromFilePath: string,
     specifier: string,
-    allFiles: Set<string>
+    allFiles: Set<string>,
+    pathAliases?: Record<string, string[]>
   ): string | null {
+    const candidateExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cts', '.cjs', '.json', '.css'];
+
+    // 1. Resolve path aliases (e.g. "@/components/Button", "~/lib/utils")
+    if (pathAliases && !specifier.startsWith('.') && !specifier.startsWith('/')) {
+      for (const [aliasPattern, targetPatterns] of Object.entries(pathAliases)) {
+        if (aliasPattern.endsWith('/*')) {
+          const prefix = aliasPattern.slice(0, -2);
+          if (specifier.startsWith(prefix)) {
+            const subPath = specifier.slice(prefix.length).replace(/^\/+/, '');
+            for (const targetPattern of targetPatterns) {
+              const targetPrefix = targetPattern.endsWith('/*')
+                ? targetPattern.slice(0, -2)
+                : targetPattern.replace(/\*$/, '');
+              const candidate = path.normalize(path.join(targetPrefix, subPath)).replace(/\\/g, '/').replace(/^\.\//, '');
+
+              if (allFiles.has(candidate)) return candidate;
+              for (const ext of candidateExtensions) {
+                if (allFiles.has(candidate + ext)) return candidate + ext;
+                const idx = path.join(candidate, `index${ext}`).replace(/\\/g, '/');
+                if (allFiles.has(idx)) return idx;
+              }
+            }
+          }
+        } else if (specifier === aliasPattern) {
+          for (const target of targetPatterns) {
+            const candidate = target.replace(/\\/g, '/').replace(/^\.\//, '');
+            if (allFiles.has(candidate)) return candidate;
+            for (const ext of candidateExtensions) {
+              if (allFiles.has(candidate + ext)) return candidate + ext;
+              const idx = path.join(candidate, `index${ext}`).replace(/\\/g, '/');
+              if (allFiles.has(idx)) return idx;
+            }
+          }
+        }
+      }
+    }
+
     // Ignore non-relative npm or node built-in imports
     if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
       return null;
@@ -28,7 +106,6 @@ export class DependencyGraphBuilder {
     if (allFiles.has(cleanPath)) return cleanPath;
 
     // Check with extensions
-    const candidateExtensions = ['.ts', '.js', '.mts', '.mjs', '.cts', '.cjs', '.json', '.css'];
     for (const ext of candidateExtensions) {
       const withExt = cleanPath + ext;
       if (allFiles.has(withExt)) return withExt;
@@ -52,11 +129,12 @@ export class DependencyGraphBuilder {
     entryPaths: string[]
   ): DependencyGraph {
     const allFilePaths = new Set(workspace.files.map(f => f.path));
+    const pathAliases = this.extractPathAliases(workspace);
     const nodes: Record<string, DependencyGraphNode> = {};
 
     // Initialize all code files as nodes
     for (const file of workspace.files) {
-      if (['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts'].includes(file.extension)) {
+      if (['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts'].includes(file.extension)) {
         nodes[file.path] = {
           path: file.path,
           dependencies: [],
@@ -85,7 +163,7 @@ export class DependencyGraphBuilder {
       nodes[filePath].isEntryCandidate = modInfo.hasWorkerFetchHandler;
 
       for (const imp of modInfo.imports) {
-        const resolved = this.resolveSpecifier(filePath, imp.source, allFilePaths);
+        const resolved = this.resolveSpecifier(filePath, imp.source, allFilePaths, pathAliases);
         const target = resolved || imp.source;
 
         if (imp.isDynamic) {

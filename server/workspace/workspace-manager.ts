@@ -217,7 +217,7 @@ export class WorkspaceManager {
 
         totalSize += fileBuffer.length;
         if (totalSize > MAX_TOTAL_SIZE_BYTES) {
-          throw new Error(`Project uncompressed size exceeds limit of 60MB.`);
+          throw new Error(`Project uncompressed size exceeds limit of 80MB.`);
         }
 
         const dotIdx = cleanRelPath.lastIndexOf('.');
@@ -322,35 +322,7 @@ export class WorkspaceManager {
         } else if (item.bufferBase64) {
           buffer = Buffer.from(item.bufferBase64, 'base64');
         } else if (item.content !== undefined) {
-          const rawStr = item.content;
-          const trimmed = rawStr.trim();
-          let decodedFromBase64 = false;
-
-          // Auto-detect if content was unintentionally passed as Base64 string
-          if (/^[A-Za-z0-9+/=\s]+$/.test(trimmed) && trimmed.length >= 8) {
-            try {
-              const testDecoded = Buffer.from(trimmed, 'base64').toString('utf-8');
-              if (
-                // JSON format detection
-                (ext === '.json' && (testDecoded.trim().startsWith('{') || testDecoded.trim().startsWith('['))) ||
-                // TypeScript / JavaScript / Web config detection
-                ((ext === '.ts' || ext === '.js' || ext === '.mjs' || ext === '.cjs') &&
-                  (testDecoded.includes('export') || testDecoded.includes('import') || testDecoded.includes('function') || testDecoded.includes('const') || testDecoded.includes('let') || testDecoded.includes('var') || testDecoded.includes('//') || testDecoded.includes('/*') || testDecoded.includes('{'))) ||
-                // HTML / CSS detection
-                ((ext === '.html' || ext === '.htm') && (testDecoded.includes('<') || testDecoded.includes('<!DOCTYPE'))) ||
-                (ext === '.css' && (testDecoded.includes('{') || testDecoded.includes('@') || testDecoded.includes(':'))) ||
-                // TOML / YAML detection
-                ((ext === '.toml' || ext === '.yaml' || ext === '.yml') && (testDecoded.includes('=') || testDecoded.includes(':')))
-              ) {
-                buffer = Buffer.from(trimmed, 'base64');
-                decodedFromBase64 = true;
-              }
-            } catch {}
-          }
-
-          if (!decodedFromBase64) {
-            buffer = Buffer.from(rawStr, 'utf-8');
-          }
+          buffer = Buffer.from(item.content, 'utf-8');
         } else {
           buffer = Buffer.alloc(0);
         }
@@ -361,7 +333,7 @@ export class WorkspaceManager {
 
         totalSize += buffer.length;
         if (totalSize > MAX_TOTAL_SIZE_BYTES) {
-          throw new Error(`Project size exceeds limit of 60MB.`);
+          throw new Error(`Project size exceeds limit of 80MB.`);
         }
 
         const isBinary = this.isBinaryBuffer(buffer, ext);

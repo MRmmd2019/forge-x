@@ -15,6 +15,17 @@ const NON_EMBEDDABLE_EXTENSIONS = new Set([
   '.mts',
   '.cts',
   '.map',
+  '.env',
+  '.pem',
+  '.key',
+  '.crt',
+  '.cert',
+  '.pfx',
+  '.p12',
+  '.db',
+  '.sqlite',
+  '.sqlite3',
+  '.prisma',
 ]);
 
 const NON_EMBEDDABLE_FILENAMES = new Set([
@@ -59,6 +70,11 @@ const NON_EMBEDDABLE_FILENAMES = new Set([
   'contributing.md',
   'code_of_conduct.md',
   'security.md',
+  'database.json',
+  'ormconfig.json',
+  'knexfile.js',
+  'credentials.json',
+  'service-account.json',
 ]);
 
 const NON_EMBEDDABLE_DIRS = new Set([
@@ -73,6 +89,22 @@ const NON_EMBEDDABLE_DIRS = new Set([
   'test',
   '__tests__',
   'scripts',
+  'server',
+  'backend',
+  'api',
+  'prisma',
+  'migrations',
+  'secrets',
+]);
+
+const CLIENT_FACING_DIRS = new Set([
+  'public',
+  'dist',
+  'build',
+  'out',
+  'static',
+  'assets',
+  'client',
 ]);
 
 export function isEmbeddableAsset(filePath: string): boolean {
@@ -80,13 +112,29 @@ export function isEmbeddableAsset(filePath: string): boolean {
   const segments = normalized.split('/');
   const basename = segments[segments.length - 1]?.toLowerCase() || '';
 
-  // Exclude ignored directories
+  // Exclude ignored/private directories
   if (segments.slice(0, -1).some(seg => NON_EMBEDDABLE_DIRS.has(seg.toLowerCase()))) {
+    return false;
+  }
+
+  // Strictly disallow all environment files (.env, .env.local, .env.production, etc.)
+  if (basename === '.env' || basename.startsWith('.env.') || basename.startsWith('.env')) {
     return false;
   }
 
   // Exclude test files
   if (basename.includes('.test.') || basename.includes('.spec.')) {
+    return false;
+  }
+
+  // Exclude sensitive database, credentials, and secret files
+  if (
+    basename.includes('secret') ||
+    basename.includes('credential') ||
+    basename.includes('service-account') ||
+    basename.includes('private-key') ||
+    basename.startsWith('.npmrc')
+  ) {
     return false;
   }
 
@@ -100,11 +148,23 @@ export function isEmbeddableAsset(filePath: string): boolean {
     return false;
   }
 
-  // Exclude raw TypeScript source files (esbuild compiles them into the bundle)
   const dotIdx = basename.lastIndexOf('.');
   const ext = dotIdx !== -1 ? basename.slice(dotIdx) : '';
+
+  // Exclude non-embeddable extensions (.ts, .tsx, keys, certs, DBs, etc.)
   if (NON_EMBEDDABLE_EXTENSIONS.has(ext)) {
     return false;
+  }
+
+  // Strictly disallow server-side JavaScript source files (.js, .mjs, .cjs)
+  // Only permit JS files if they reside in explicit client-facing distribution folders
+  // (e.g. public/, dist/, build/, out/, static/, assets/)
+  if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
+    const parentDirs = segments.slice(0, -1).map(s => s.toLowerCase());
+    const isClientFacing = parentDirs.some(dir => CLIENT_FACING_DIRS.has(dir));
+    if (!isClientFacing) {
+      return false;
+    }
   }
 
   return true;

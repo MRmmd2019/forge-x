@@ -292,8 +292,9 @@ export interface BuildMetadata {
 export interface SmokeTestResult {
   success: boolean;
   endpointsTested: number;
-  details: { route: string; status: number; ok: boolean; contentType?: string }[];
+  details: { route: string; status: number; ok: boolean; contentType?: string; note?: string; advisory?: boolean }[];
   error?: string;
+  advisory?: boolean;
 }
 
 export interface PipelineProgressEvent {

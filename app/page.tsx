@@ -443,7 +443,23 @@ export default function Page() {
           </div>
 
           {/* Primary Action Button */}
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {/* Quick Toggle: Bypass Smoke Test */}
+            <label
+              title="Skip local synthetic HTTP route probes (recommended for large projects, custom auth, or workers requiring Durable Objects/R2/KV bindings)"
+              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[#0e131d] border border-[#1e2738] hover:border-slate-700 transition cursor-pointer select-none text-[11px] font-mono text-slate-300"
+            >
+              <input
+                type="checkbox"
+                id="quick-bypass-smoke-toggle"
+                checked={options.skipSmokeTest ?? false}
+                onChange={(e) => setOptions({ ...options, skipSmokeTest: e.target.checked })}
+                className="h-3.5 w-3.5 rounded border-slate-700 text-orange-500 focus:ring-orange-500 bg-slate-800 cursor-pointer"
+              />
+              <span className="hidden sm:inline">Bypass Smoke Test</span>
+              <span className="sm:hidden">No Smoke</span>
+            </label>
+
             {isBuilding && (
               <button
                 id="cancel-build-btn"
