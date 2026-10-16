@@ -8,7 +8,10 @@ import {
 
 export const NON_ENTRY_PATTERNS = [
   /(?:^|\/)(?:esbuild|vite|webpack|rollup|postcss|tailwind|next|jest|babel|eslint|prettier|tsconfig|wrangler|drizzle)\.config\.[cm]?[jt]s$/i,
-  /(?:^|\/)(?:build|bundle|scripts?|tests?|specs?|coverage)\//i,
+  /(?:^|\/)(?:build|bundle|scripts?|tests?|specs?|coverage|audit|smoke|benchmarks?|fixtures?|mocks?|testing)\//i,
+  /(?:^|\/)(?:hardening-test|audit-runner|smoke-tester|test-runner|smoke-runner)\b/i,
+  /(?:^|\/)app\/api\/(?:hardening-test|test|audit|smoke)\b/i,
+  /(?:^|\/)server\/(?:testing|smoke|wrangler|dependencies|preview|workspace|analyzer|builder|repair)\//i,
   /\.d\.ts$/i,
   /\.(test|spec)\.[cm]?[jt]sx?$/i,
 ];
@@ -216,6 +219,7 @@ export class EntryDetector {
       { pattern: /^worker\.(ts|js|mjs)$/i, score: 78, reason: 'Root worker script file' },
       { pattern: /^(src\/)?worker\.(ts|js|mjs)$/i, score: 76, reason: 'Source worker script file' },
       { pattern: /^(src\/)?main\.(ts|js|mjs)$/i, score: 74, reason: 'Standard main entry script' },
+      { pattern: /^(src\/)?(app|pages)\/(page|index)\.(tsx|jsx|ts|js)$/i, score: 72, reason: 'Next.js root page' },
       { pattern: /^(src\/)?index\.(ts|js|mjs)$/i, score: 70, reason: 'Standard index entry script' },
       { pattern: /^worker\/index\.(ts|js|mjs)$/i, score: 72, reason: 'Worker folder index script' },
       { pattern: /^(src\/)?app\.(ts|js|mjs)$/i, score: 68, reason: 'Standard application script' },
@@ -243,13 +247,15 @@ export class EntryDetector {
     if (dependencyGraph) {
       for (const [nodePath, node] of Object.entries(dependencyGraph.nodes)) {
         if (node.dependents.length === 0 && node.dependencies.length > 0) {
+          const isSubRoute = /(?:^|\/)(?:app|pages)\/api\//i.test(nodePath);
+          const score = isSubRoute ? 35 : 60;
           addScore(
             nodePath,
             'script_entry',
-            60,
+            score,
             'root_dependency_hub',
             'LOW',
-            `Topological root file with ${node.dependencies.length} dependencies and 0 dependents`
+            `Topological root file with ${node.dependencies.length} dependencies and 0 dependents${isSubRoute ? ' (API sub-route)' : ''}`
           );
         }
       }

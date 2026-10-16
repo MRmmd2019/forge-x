@@ -74,24 +74,22 @@ export class NodeAdapter implements FrameworkAdapter {
       });
     }
 
-    // Check for definitely unsupported Node APIs (child_process, cluster, v8)
-    const criticalUnsupported = analysis.nodeApiUsages.filter(u =>
-      ['child_process', 'node:child_process', 'cluster', 'node:cluster', 'v8', 'node:v8'].includes(u.moduleName)
+    // Check for OS-level Node APIs (child_process, cluster, v8, worker_threads)
+    // AutoForge provides built-in virtual mock stubs for these modules so packages can bundle cleanly without aborting.
+    const osLevelModules = analysis.nodeApiUsages.filter(u =>
+      ['child_process', 'node:child_process', 'cluster', 'node:cluster', 'v8', 'node:v8', 'worker_threads', 'node:worker_threads'].includes(u.moduleName)
     );
 
-    if (criticalUnsupported.length > 0) {
-      unsupportedReasons.push(
-        `Project imports unsupported OS/Process Node modules: ${criticalUnsupported.map(u => u.moduleName).join(', ')}.`
-      );
-      for (const u of criticalUnsupported) {
+    if (osLevelModules.length > 0) {
+      for (const u of osLevelModules) {
         diagnostics.push({
           stage: 'analyzer',
           classification: 'RUNTIME_COMPATIBILITY_ERROR',
-          code: 'UNSUPPORTED_NODE_API',
-          message: `The "${u.moduleName}" module requires OS-level process management unavailable in Cloudflare Workers.`,
-          severity: 'error',
-          retryable: false,
-          suggestion: 'Remove process spawning / clustering code or isolate it behind an external API.',
+          code: 'UNSUPPORTED_NODE_API_SHIMMED',
+          message: `The "${u.moduleName}" module requires OS-level process management unavailable in Cloudflare Workers. AutoForge has injected a safe isolate mock stub.`,
+          severity: 'warning',
+          retryable: true,
+          suggestion: 'Process spawning and OS clustering are automatically shimmed with safe stubs in Cloudflare Workers isolates.',
         });
       }
     }

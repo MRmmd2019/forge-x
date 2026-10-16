@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { WorkspaceManager } from '@/server/workspace/workspace-manager';
 import { BuildPipeline } from '@/server/pipeline';
-import { BuildOptions, BuildResult, ProjectWorkspace } from '@/types/bundler';
+import { BuildOptions, ProjectWorkspace } from '@/types/bundler';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
+  const url = new URL(req.url);
+  const streamParam = url.searchParams.get('stream') === 'true';
+
   let workspace: ProjectWorkspace | null = null;
   let options: BuildOptions = {
     minify: true,
@@ -17,206 +20,144 @@ export async function POST(req: NextRequest) {
     enableAiPlanning: true,
     assetStrategy: 'inline_bytes',
   };
-  let projectName = 'uploaded-project';
-  let isStream = false;
+  let shouldStream = streamParam;
 
   try {
     const contentType = req.headers.get('content-type') || '';
-    const url = new URL(req.url);
-    if (url.searchParams.get('stream') === 'true') {
-      isStream = true;
-    }
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
-      const nameField = formData.get('projectName');
-      if (typeof nameField === 'string' && nameField.trim()) {
-        projectName = nameField.trim();
-      }
+      const zipFile = formData.get('zipFile') as File | null;
+      const projectName = (formData.get('projectName') as string) || 'uploaded-project';
+      const formStream = formData.get('stream');
+      if (formStream === 'true') shouldStream = true;
 
-      if (formData.get('stream') === 'true') {
-        isStream = true;
-      }
-
-      const optionsRaw = formData.get('options');
-      if (typeof optionsRaw === 'string') {
+      const rawOptions = formData.get('options');
+      if (typeof rawOptions === 'string') {
         try {
-          options = { ...options, ...JSON.parse(optionsRaw) };
+          options = { ...options, ...JSON.parse(rawOptions) };
         } catch {
-          // Keep defaults
+          // ignore parse error, use default options
         }
       }
 
-      const zipFile = formData.get('zipFile') as File | null;
-      if (zipFile && zipFile.size > 0) {
-        const arrayBuf = await zipFile.arrayBuffer();
-        const zipBuffer = Buffer.from(arrayBuf);
-        workspace = await WorkspaceManager.createFromZip(zipBuffer, projectName);
+      if (zipFile) {
+        const arrayBuffer = await zipFile.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        workspace = await WorkspaceManager.createFromZip(buffer, projectName);
       } else {
-        const rawFiles = formData.getAll('files') as File[];
-        const rawPaths = formData.getAll('paths') as string[];
+        const files = formData.getAll('files') as File[];
+        const paths = formData.getAll('paths') as string[];
 
-        if (rawFiles.length === 0) {
+        if (files.length === 0) {
           return NextResponse.json(
-            { error: 'No files or ZIP archive were provided in form data' },
+            { error: 'No files or zip uploaded.' },
             { status: 400 }
           );
         }
 
-        const workspaceInputFiles: { path: string; rawBuffer: Buffer }[] = [];
-        for (let i = 0; i < rawFiles.length; i++) {
-          const file = rawFiles[i];
-          const filePath = rawPaths[i] || file.name;
+        const fileItems: { path: string; rawBuffer?: Buffer; content?: string }[] = [];
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const relPath = paths[i] || file.name;
           const ab = await file.arrayBuffer();
-          workspaceInputFiles.push({
-            path: filePath,
-            rawBuffer: Buffer.from(ab),
+          const buf = Buffer.from(ab);
+          fileItems.push({
+            path: relPath,
+            rawBuffer: buf,
           });
         }
 
-        workspace = await WorkspaceManager.createFromFiles(workspaceInputFiles, projectName);
+        workspace = await WorkspaceManager.createFromFiles(fileItems, projectName);
       }
     } else {
       // JSON body
       const body = await req.json();
-      if (body.projectName) {
-        projectName = String(body.projectName);
-      }
-      if (body.options && typeof body.options === 'object') {
+      const projectName = body.projectName || 'project';
+      if (body.stream === true) shouldStream = true;
+      if (body.options) {
         options = { ...options, ...body.options };
       }
-      if (body.stream === true) {
-        isStream = true;
-      }
 
-      const files = body.files;
-      if (!Array.isArray(files) || files.length === 0) {
+      if (!body.files || !Array.isArray(body.files) || body.files.length === 0) {
         return NextResponse.json(
-          { error: 'No project files provided in request payload' },
+          { error: 'No files provided in request body.' },
           { status: 400 }
         );
       }
 
-      workspace = await WorkspaceManager.createFromFiles(files, projectName);
+      workspace = await WorkspaceManager.createFromFiles(body.files, projectName);
     }
 
     if (!workspace) {
       return NextResponse.json(
-        { error: 'Failed to initialize workspace' },
+        { error: 'Failed to initialize project workspace.' },
         { status: 400 }
       );
     }
 
-    const currentWorkspace = workspace;
-
-    if (isStream) {
-      const encoder = new TextEncoder();
-      const readableStream = new ReadableStream({
-        async start(controller) {
-          try {
-            const buildResult = await BuildPipeline.execute(
-              currentWorkspace,
-              options,
-              (progressEvent) => {
-                const sseData = `data: ${JSON.stringify({
-                  type: 'progress',
-                  data: progressEvent,
-                })}\n\n`;
-                controller.enqueue(encoder.encode(sseData));
-              }
-            );
-
-            const resultSse = `data: ${JSON.stringify({
-              type: 'result',
-              data: buildResult,
-            })}\n\n`;
-            controller.enqueue(encoder.encode(resultSse));
-          } catch (err: any) {
-            const errorMsg = err?.message || 'Build pipeline failed during execution';
-            const failEvent = {
-              step: 'failed' as const,
-              message: errorMsg,
-              timestamp: Date.now(),
-            };
-
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ type: 'progress', data: failEvent })}\n\n`
-              )
-            );
-
-            const fallbackResult: BuildResult = {
-              success: false,
-              workspaceId: currentWorkspace.id,
-              errorSummary: {
-                what: errorMsg,
-                why: 'An unhandled error occurred during pipeline execution',
-                canFixAutomatically: false,
-              },
-              diagnostics: [
-                {
-                  code: 'FATAL_PIPELINE_ERROR',
-                  severity: 'error',
-                  stage: 'system',
-                  message: errorMsg,
-                },
-              ],
-              workerJsCode: '',
-              metadata: {
-                esbuildVersion: '0.24.2',
-                wranglerVersion: '3.107.3',
-                nodeVersion: process.version,
-                plannerVersion: 'autoforge-v2',
-                buildTimestamp: Date.now(),
-              },
-              timeline: [failEvent],
-              attempts: [],
-              totalAttempts: 1,
-              durationMs: 0,
-            };
-
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ type: 'result', data: fallbackResult })}\n\n`
-              )
-            );
-          } finally {
-            if (currentWorkspace?.dirPath) {
-              await WorkspaceManager.cleanup(currentWorkspace.dirPath);
-            }
-            controller.close();
-          }
-        },
-      });
-
-      return new Response(readableStream, {
-        headers: {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          'Connection': 'keep-alive',
-          'X-Accel-Buffering': 'no',
-        },
-      });
-    }
-
-    // Non-streaming response
-    try {
-      const buildResult = await BuildPipeline.execute(currentWorkspace, options);
-      return NextResponse.json(buildResult);
-    } finally {
-      if (currentWorkspace?.dirPath) {
-        await WorkspaceManager.cleanup(currentWorkspace.dirPath);
+    if (!shouldStream) {
+      try {
+        const result = await BuildPipeline.execute(workspace, options);
+        return NextResponse.json(result);
+      } finally {
+        if (workspace?.dirPath) {
+          await WorkspaceManager.cleanup(workspace.dirPath).catch(() => {});
+        }
       }
     }
+
+    // Stream response using SSE
+    const activeWorkspace = workspace;
+    const responseStream = new ReadableStream({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        const sendEvent = (type: string, data: any) => {
+          try {
+            const payload = `data: ${JSON.stringify({ type, data })}\n\n`;
+            controller.enqueue(encoder.encode(payload));
+          } catch {
+            // controller might be closed
+          }
+        };
+
+        try {
+          const result = await BuildPipeline.execute(
+            activeWorkspace,
+            options,
+            (progressEvent) => {
+              sendEvent('progress', progressEvent);
+            }
+          );
+          sendEvent('result', result);
+        } catch (err: any) {
+          sendEvent('error', { message: err?.message || 'Pipeline execution failed' });
+        } finally {
+          if (activeWorkspace?.dirPath) {
+            await WorkspaceManager.cleanup(activeWorkspace.dirPath).catch(() => {});
+          }
+          try {
+            controller.close();
+          } catch {
+            // ignore
+          }
+        }
+      },
+    });
+
+    return new Response(responseStream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+      },
+    });
   } catch (err: any) {
-    if (workspace && (workspace as any).dirPath) {
-      await WorkspaceManager.cleanup((workspace as any).dirPath);
+    if (workspace?.dirPath) {
+      await WorkspaceManager.cleanup(workspace.dirPath).catch(() => {});
     }
     return NextResponse.json(
-      {
-        success: false,
-        error: err?.message || 'Server error during build initialization',
-      },
+      { error: err?.message || 'Build request processing failed' },
       { status: 500 }
     );
   }

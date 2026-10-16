@@ -10,6 +10,7 @@ import {
 import { DependencyManager, ALL_NODE_BUILTIN_MODULES } from '@/server/dependencies/dependency-manager';
 import { CLOUDFLARE_NODE_COMPAT_MODULES } from '@/server/builder/esbuild-builder';
 import { isDisallowedEntry } from '@/server/analyzer/entry-detector';
+import { isVirtualShimModule } from '@/server/builder/virtual-shims';
 
 export interface DeterministicRepairResult {
   repairedPlan: BuildPlan;
@@ -112,19 +113,41 @@ export class DeterministicRepairEngine {
           continue;
         }
 
-        // B. Node.js built-ins or Cloudflare runtime modules
-        const isNode =
-          mod.startsWith('node:') ||
-          ALL_NODE_BUILTIN_MODULES.has(mod) ||
-          CLOUDFLARE_NODE_COMPAT_MODULES.includes(mod);
-        
+        // B. Virtual Mock Shims (next/server, child_process, tty, inspector, clsx, etc.)
+        const bareMod = mod.replace(/^node:/, '');
+        if (isVirtualShimModule(mod) || isVirtualShimModule(bareMod)) {
+          repairActions.push(`Injected virtual mock shim for "${mod}"`);
+          canRetry = true;
+          continue;
+        }
+
+        // C. Path aliases (e.g. "@/server/...")
+        if (mod.startsWith('@/')) {
+          const rel = mod.slice(2);
+          const extensions = ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.js'];
+          const found = workspace.files.find(f => {
+            const clean = f.path.replace(/\\/g, '/');
+            return extensions.some(ext => clean === `${rel}${ext}` || clean.endsWith(`/${rel}${ext}`));
+          });
+          if (found) {
+            repairActions.push(`Resolved workspace alias "${mod}" to "${found.path}"`);
+            canRetry = true;
+            continue;
+          }
+        }
+
+        // D. Node.js built-ins or Cloudflare runtime modules
+        const isSupportedNode =
+          CLOUDFLARE_NODE_COMPAT_MODULES.includes(mod) ||
+          CLOUDFLARE_NODE_COMPAT_MODULES.includes(bareMod);
+
         const isCf = mod.startsWith('cloudflare:') || mod === 'workerd';
 
-        if (isNode || isCf) {
+        if (isSupportedNode || isCf) {
           if (!repairedPlan.externalDependencies.includes(mod)) {
             repairedPlan.externalDependencies.push(mod);
           }
-          if (isNode && !repairedPlan.compatibilityFlags.includes('nodejs_compat')) {
+          if (isSupportedNode && !repairedPlan.compatibilityFlags.includes('nodejs_compat')) {
             repairedPlan.compatibilityFlags.push('nodejs_compat');
           }
           repairActions.push(`Externalized platform module "${mod}"`);
@@ -136,7 +159,7 @@ export class DeterministicRepairEngine {
             repairActions.push(`Installed missing npm package "${mod}" into workspace`);
             canRetry = true;
           } else {
-            // Fallback: mark as external dependency
+            // Fallback: mark as external dependency only if not a known unsupported platform module
             if (!repairedPlan.externalDependencies.includes(mod)) {
               repairedPlan.externalDependencies.push(mod);
               repairActions.push(`Marked unresolved module "${mod}" as external`);

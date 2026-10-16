@@ -3,12 +3,15 @@ import fs from 'fs';
 import * as esbuild from 'esbuild';
 import { BuildPlan, ProjectWorkspace } from '@/types/bundler';
 
+import { getVirtualShim, isVirtualShimModule } from './virtual-shims';
+
 export interface EsbuildCompileResult {
   code: string;
   css?: string;
   sourceMap?: string;
   warnings: esbuild.Message[];
   errors: esbuild.Message[];
+  detectedMocks: string[];
 }
 
 export const CLOUDFLARE_NODE_COMPAT_MODULES = [
@@ -38,19 +41,19 @@ export const CLOUDFLARE_NODE_COMPAT_MODULES = [
   'util',
   'util/types',
   'zlib',
-  // Common stubs/modules supported in workers
   'os',
   'fs',
   'fs/promises',
   'http',
   'https',
   'tls',
-  'v8',
-  'vm',
-  'worker_threads',
 ];
 
-function createCloudflareWorkersPlugin(externalDeps: string[] = []): esbuild.Plugin {
+function createCloudflareWorkersPlugin(
+  workspace: ProjectWorkspace,
+  externalDeps: string[] = [],
+  detectedMocks: Set<string>
+): esbuild.Plugin {
   const nodeBuiltinRegex = new RegExp(
     `^(${CLOUDFLARE_NODE_COMPAT_MODULES.map(m => m.replace('/', '\\/')).join('|')})(\\/.*)?$`
   );
@@ -58,33 +61,102 @@ function createCloudflareWorkersPlugin(externalDeps: string[] = []): esbuild.Plu
   const customExternalsSet = new Set(externalDeps);
 
   return {
-    name: 'cloudflare-worker-externals-resolver',
+    name: 'cloudflare-worker-virtual-resolver',
     setup(build) {
-      // 1. Explicit node: or cloudflare: protocol imports
-      build.onResolve({ filter: /^(node:|cloudflare:)/ }, args => {
-        return { path: args.path, external: true };
-      });
+      // 1. Virtual mock shims (next/server, child_process, tty, inspector, clsx, etc.)
+      build.onResolve({ filter: /.*/ }, args => {
+        const cleanMod = args.path.replace(/^node:/, '');
+        if (isVirtualShimModule(args.path) || isVirtualShimModule(cleanMod)) {
+          const modKey = isVirtualShimModule(args.path) ? args.path : cleanMod;
+          detectedMocks.add(modKey);
+          return { path: modKey, namespace: 'virtual-shim' };
+        }
 
-      // 2. Bare Node.js built-in module names (e.g. "crypto", "buffer", "stream/web")
-      build.onResolve({ filter: nodeBuiltinRegex }, args => {
-        return { path: args.path, external: true };
-      });
+        // 2. Resolve tsconfig @/* path aliases against workspace root
+        if (args.path.startsWith('@/')) {
+          const rel = args.path.slice(2);
+          const extensions = [
+            '',
+            '.ts',
+            '.tsx',
+            '.js',
+            '.jsx',
+            '.json',
+            '/index.ts',
+            '/index.js',
+            '/index.tsx',
+            '/index.jsx',
+          ];
+          for (const ext of extensions) {
+            const candidate = path.join(workspace.dirPath, `${rel}${ext}`);
+            if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+              return { path: candidate };
+            }
+          }
+        }
 
-      // 3. Any explicitly declared external dependencies
-      if (customExternalsSet.size > 0) {
-        build.onResolve({ filter: /.*/ }, args => {
+        // 3. Explicit node: or cloudflare: protocol imports
+        if (args.path.startsWith('node:') || args.path.startsWith('cloudflare:')) {
+          return { path: args.path, external: true };
+        }
+
+        // 4. Bare Node.js built-in module names (e.g. "crypto", "buffer", "stream/web")
+        if (nodeBuiltinRegex.test(args.path)) {
+          return { path: args.path, external: true };
+        }
+
+        // 5. Host node_modules fallback for missing workspace dependencies (safe fs lookup, avoiding Webpack require.resolve)
+        if (!args.path.startsWith('.') && !args.path.startsWith('/')) {
+          const searchRoots = [
+            path.join(workspace.dirPath, 'node_modules'),
+            path.resolve(process.cwd(), 'node_modules'),
+          ];
+          for (const baseRoot of searchRoots) {
+            const candidateDir = path.join(baseRoot, args.path);
+            const candidatePkg = path.join(candidateDir, 'package.json');
+            if (fs.existsSync(candidatePkg)) {
+              try {
+                const pkgData = JSON.parse(fs.readFileSync(candidatePkg, 'utf8'));
+                const mainField = pkgData.module || pkgData.main || 'index.js';
+                const mainTarget = path.resolve(candidateDir, mainField);
+                if (fs.existsSync(mainTarget)) {
+                  return { path: mainTarget };
+                }
+                if (fs.existsSync(mainTarget + '.js')) {
+                  return { path: mainTarget + '.js' };
+                }
+              } catch {}
+            }
+            for (const ext of ['', '.js', '.mjs', '.cjs', '.ts']) {
+              const directFile = candidateDir + ext;
+              if (fs.existsSync(directFile) && fs.statSync(directFile).isFile()) {
+                return { path: directFile };
+              }
+            }
+          }
+
+          // Check if custom externals requested it (unless it is a virtual shim)
           if (customExternalsSet.has(args.path)) {
             return { path: args.path, external: true };
           }
-          // Also match package prefixes like "@scope/pkg" or "pkg/subpath"
           for (const ext of customExternalsSet) {
             if (args.path === ext || args.path.startsWith(`${ext}/`)) {
               return { path: args.path, external: true };
             }
           }
-          return null;
-        });
-      }
+        }
+
+        return null;
+      });
+
+      // Load contents for virtual shims
+      build.onLoad({ filter: /.*/, namespace: 'virtual-shim' }, args => {
+        const shimCode = getVirtualShim(args.path);
+        return {
+          contents: shimCode || 'export default {};',
+          loader: 'js',
+        };
+      });
     },
   };
 }
@@ -102,17 +174,22 @@ export class EsbuildBuilder {
         code: '// No JavaScript entry point needed for static asset worker\n',
         warnings: [],
         errors: [],
+        detectedMocks: [],
       };
     }
 
     try {
-      const externalSet = new Set([
-        'node:*',
-        'cloudflare:*',
-        ...CLOUDFLARE_NODE_COMPAT_MODULES,
-        ...CLOUDFLARE_NODE_COMPAT_MODULES.map(m => `node:${m}`),
-        ...(plan.externalDependencies || []),
-      ]);
+      const detectedMocks = new Set<string>();
+
+      const externalSet = new Set(
+        [
+          'node:*',
+          'cloudflare:*',
+          ...CLOUDFLARE_NODE_COMPAT_MODULES,
+          ...CLOUDFLARE_NODE_COMPAT_MODULES.map(m => `node:${m}`),
+          ...(plan.externalDependencies || []),
+        ].filter(m => !isVirtualShimModule(m) && !isVirtualShimModule(m.replace(/^node:/, '')))
+      );
 
       const tsconfigPath = path.join(workspace.dirPath, 'tsconfig.json');
       const hasTsconfig = fs.existsSync(tsconfigPath);
@@ -188,14 +265,15 @@ export class EsbuildBuilder {
         `var VERSION = globalThis.VERSION;`,
       ].filter(Boolean).join('\n');
 
+      const reqIdent = 'require';
       const nodeRequireBanner = [
         `import { createRequire as __createRequire__ } from 'node:module';`,
-        `var require;`,
+        `var ${reqIdent};`,
         `try {`,
         `  var __cf_meta_url__ = (typeof import.meta !== 'undefined' && import.meta && typeof import.meta.url === 'string' && import.meta.url) || 'file:///worker.js';`,
-        `  require = __createRequire__(__cf_meta_url__);`,
+        `  ${reqIdent} = __createRequire__(__cf_meta_url__);`,
         `} catch {`,
-        `  require = function(mod) { throw new Error('Dynamic require of "' + mod + '" is not supported in this runtime isolate.'); };`,
+        `  ${reqIdent} = function(mod) { throw new Error('Dynamic ' + '${reqIdent}' + ' of "' + mod + '" is not supported in this runtime isolate.'); };`,
         `}`,
       ].join('\n');
 
@@ -256,7 +334,13 @@ export class EsbuildBuilder {
           // WebAssembly -> binary
           '.wasm': 'binary',
         },
-        plugins: [createCloudflareWorkersPlugin(plan.externalDependencies || [])],
+        plugins: [
+          createCloudflareWorkersPlugin(
+            workspace,
+            plan.externalDependencies || [],
+            detectedMocks
+          ),
+        ],
         external: Array.from(externalSet),
         absWorkingDir: workspace.dirPath,
         define: buildDefines,
@@ -279,6 +363,7 @@ export class EsbuildBuilder {
         css: cssOutput,
         warnings: buildResult.warnings,
         errors: buildResult.errors,
+        detectedMocks: Array.from(detectedMocks),
       };
     } catch (err: any) {
       const esbuildErrors = err.errors || [];

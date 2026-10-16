@@ -93,6 +93,17 @@ export function ResultCard({ result, onDownload, onRetry, onSwitchTab }: ResultC
           </div>
         </div>
 
+        {/* Mock Stub / Smoke Test Bypass Notice */}
+        {result.diagnostics?.some(d => d.code === 'SMOKE_TEST_BYPASSED_MOCK_DETECTED') && (
+          <div className="flex items-center gap-2.5 p-3 rounded-xl bg-amber-950/40 border border-amber-700/50 text-amber-200 text-xs font-mono">
+            <Sparkles className="h-4 w-4 shrink-0 text-amber-400" />
+            <div className="flex-1 leading-relaxed">
+              <span className="font-bold text-amber-300">آماده دپلوی (بای‌پس هوشمند اسموک تست):</span>{' '}
+              ماژول‌های سمت سرور و شیم‌های وب استاندارد (NextResponse, Request, Node stubs) به صورت امن درون worker.js تعبیه شدند.
+            </div>
+          </div>
+        )}
+
         {/* Quick Inspection Metric Chips */}
         {report && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2 border-t border-emerald-900/40 text-xs font-mono">

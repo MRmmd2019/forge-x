@@ -12,7 +12,8 @@
     "verify": "tsx scripts/autonomous-audit-runner.ts",
     "benchmark": "tsx scripts/benchmark-runner.ts",
     "audit": "tsx scripts/autonomous-audit-runner.ts",
-    "clean": "next clean"
+    "clean": "rm -rf .next",
+    "postinstall": "node scripts/patch-next-devtools.js"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

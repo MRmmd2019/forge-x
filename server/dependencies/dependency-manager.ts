@@ -23,6 +23,8 @@ export const ALL_NODE_BUILTIN_MODULES = new Set([
   'url', 'util', 'v8', 'vm', 'wasi', 'worker_threads', 'zlib'
 ]);
 
+import { isVirtualShimModule } from '@/server/builder/virtual-shims';
+
 export class DependencyManager {
   /**
    * Determine whether a module specifier is an npm package dependency.
@@ -44,13 +46,33 @@ export class DependencyManager {
       return false;
     }
 
+    // Path aliases (e.g. "@/server", "#internal", "~utils")
+    if (
+      trimmed.startsWith('@/') ||
+      trimmed === '@' ||
+      trimmed.startsWith('#') ||
+      trimmed.startsWith('~')
+    ) {
+      return false;
+    }
+
     // Platform-specific protocols
     if (trimmed.startsWith('node:') || trimmed.startsWith('cloudflare:') || trimmed === 'workerd') {
       return false;
     }
 
+    // Next.js internal subpaths and server runtime
+    if (trimmed.startsWith('next/') || trimmed === 'next') {
+      return false;
+    }
+
+    // Handled by virtual in-memory shims
+    if (isVirtualShimModule(trimmed)) {
+      return false;
+    }
+
     // Extract base package identifier
-    const baseModule = trimmed.startsWith('@')
+    const baseModule = (trimmed.startsWith('@') && trimmed.includes('/'))
       ? trimmed.split('/').slice(0, 2).join('/')
       : trimmed.split('/')[0];
 
@@ -76,7 +98,10 @@ export class DependencyManager {
    */
   public static extractPackageName(specifier: string): string {
     const trimmed = specifier.trim();
-    if (trimmed.startsWith('@')) {
+    if (trimmed.startsWith('@/') || trimmed === '@') {
+      return trimmed;
+    }
+    if (trimmed.startsWith('@') && trimmed.includes('/')) {
       const parts = trimmed.split('/');
       return parts.slice(0, 2).join('/');
     }

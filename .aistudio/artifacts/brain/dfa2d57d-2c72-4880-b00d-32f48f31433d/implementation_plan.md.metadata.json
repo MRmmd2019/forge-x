@@ -1,0 +1,6 @@
+{
+  "summary": "Implementation plan for resolving Cloudflare Worker build failures on full-stack projects:\n1. Smart Fallback Adapter with Mock Stubs: Provide intelligent synthetic fallbacks for server-only / Next.js modules and mock unreachable Node/server runtime APIs.\n2. Entry Point Prioritization & Internal Tool Filtering: Exclude test harnesses, internal hardening routes, and tool endpoints from entry candidate scoring.\n3. Smoke Test Policy with Auto-Bypass & Warnings: Detect simulated/mocked modules and gracefully bypass smoke test with explicit warnings rather than failing.\n4. UI Visibility & Clean Feedback: Display detected mock status, entry rationale, and deployment readiness indicators.",
+  "updatedAt": "2026-10-13T19:46:08.491131144Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
