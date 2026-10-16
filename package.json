@@ -26,6 +26,7 @@
     "esbuild": "^0.28.2",
     "hono": "^4.13.8",
     "itty-router": "^5.0.24",
+    "javascript-obfuscator": "^5.9.0",
     "jose": "^6.2.12",
     "jszip": "^3.10.2",
     "lucide-react": "^0.553.0",

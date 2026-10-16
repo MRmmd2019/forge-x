@@ -38,8 +38,10 @@ import {
   SampleProject,
 } from '@/types/bundler';
 import { SAMPLE_PROJECTS } from '@/lib/sample-projects';
+import { ObfuscatorStudio } from '@/components/obfuscator/ObfuscatorStudio';
 
 export default function Page() {
+  const [appMode, setAppMode] = useState<'compiler' | 'obfuscator'>('obfuscator');
   const [options, setOptions] = useState<BuildOptions>({
     minify: true,
     sourceMap: false,
@@ -418,14 +420,20 @@ export default function Page() {
         onResetWorkspace={handleResetWorkspace}
         isBuilding={isBuilding}
         hasProjectLoaded={hasProject}
+        currentMode={appMode}
+        onModeChange={setAppMode}
       />
 
       {/* Main Workspace */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-        {/* Hero Workspace Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 sm:p-6 rounded-2xl bg-[#0c1017] border border-[#1e2738] shadow-sm">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
+        {appMode === 'obfuscator' ? (
+          <ObfuscatorStudio />
+        ) : (
+          <>
+            {/* Hero Workspace Header */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 sm:p-6 rounded-2xl bg-[#0c1017] border border-[#1e2738] shadow-sm">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
               <span className="flex h-2 w-2 relative">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-500"></span>
@@ -710,6 +718,8 @@ export default function Page() {
             )}
           </div>
         </div>
+        </>
+        )}
       </main>
 
       {/* Engine Settings Modal */}

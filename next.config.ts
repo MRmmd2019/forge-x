@@ -2,7 +2,7 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  serverExternalPackages: ['esbuild', 'wrangler', 'jszip'],
+  serverExternalPackages: ['esbuild', 'wrangler', 'jszip', 'javascript-obfuscator'],
   allowedDevOrigins: [
     '**.run.app',
     '*.run.app',
